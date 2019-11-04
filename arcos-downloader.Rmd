@@ -1,0 +1,245 @@
+---
+title: "Homeless Arcos"
+author: "Howard Center for Investigative Journalism"
+date: "10/22/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Libraries
+
+```{r}
+library(tidyverse)  # attaches purrr and readr
+library(lubridate)
+library(rvest)
+library(downloader)
+library(R.utils)
+library(rlist)
+library(arcos)
+library(tidycensus)
+# library(fs)
+# library(stringr)
+
+# library(retrosheet)
+# install.packages('retrosheet')
+# devtools::install_github("rmscriven/retrosheet")
+```
+
+
+```{r}
+
+# Store census API key
+census_api_key("549950d36c22ff16455fe196bbbd01d63cfbe6cf")
+
+# store ARCOS API keys as an object called key
+key <- "uO4EK6I"
+
+# Define a list of states
+
+states <- c("AL",	"AK",	"AZ",	"AR",	"CA",	"CO",	"CT", "DC", "DE",	"FL",	"GA",	"HI",	"ID",	"IL",	"IN",	"IA",	"KS",	"KY",	"LA",	"ME",	"MD",	"MA",	"MI",	"MN",	"MS",	"MO",	"MT",	"NE",	"NV",	"NH",	"NJ",	"NM",	"NY",	"NC",	"ND",	"OH",	"OK",	"OR",	"PA",	"RI",	"SC",	"SD",	"TN",	"TX",	"UT",	"VT",	"VA",	"WA",	"WV",	"WI",	"WY")
+
+# Lowercase all of them for happy urls
+states <- lapply(states, tolower)
+
+# Build an empty list to hold the url for each state
+state_urls <- list()
+
+# Make an empty dataframe
+tract_pills <- tibble(GEOID = character(), year = character(), total_pills = double(), total_2010_population = double())
+
+# Build a list of URLS of zip files to download, with a for loop
+
+for (state in states) {
+    # Cut URL into pieces, this is my last resort. https://www.washingtonpost.com/wp-stat/dea-pain-pill-database/summary/arcos-wa-statewide-itemized.tsv.gz
+    url_start <- "https://www.washingtonpost.com/wp-stat/dea-pain-pill-database/summary/arcos-"
+    url_end <- "-statewide-itemized.tsv.gz"
+    # Rebuild it with for each state code
+    state_url <- paste0(url_start, state, url_end)
+    # Add to our list of state urls
+    state_urls <- c(state_urls, state_url)
+}
+
+# For debugging, just take first state
+#state_urls <- state_urls
+
+# Pull down raw data for each state, 
+for (url in state_urls) {
+    
+    # Get the state code for purpose of creating filenames
+    state_code <- url %>%
+      str_remove("https://www.washingtonpost.com/wp-stat/dea-pain-pill-database/summary/arcos-") %>%
+      str_remove("-statewide-itemized.tsv.gz")
+    file_path <- paste0("input_data/",state_code,".tsv.gz")
+    # Download each state file into our data folder
+    download(url, file_path, mode="wb")  
+    print(paste0("Finished downloading ", state_code))
+    # Unzip each state file, which deletes the zip folder
+    gunzip(file_path)
+    print(paste0("Finished unzipping ", state_code))
+    # Load census tract of each chain and retail pharmacy in our state in the data
+    pharmacy_tracts <- pharm_tracts(key=key, state=state_code)
+    print(paste0("Finished getting pharmacy tracts ", state_code))
+    # Load 2010 population of each census tract in the data
+    population_2010 <- get_decennial(geography = "tract", variables = "P001001", year = 2010,
+                    state = state_code, geometry = FALSE) %>%
+                    select(GEOID, total_2010_population = value)
+    print(paste0("Finished getting population ", state_code))
+    # Read in the raw data for each state 
+    temp <- read_tsv(paste0("input_data/",state_code,".tsv"))
+    print(paste0("Finished reading in raw data ", state_code))
+    # Process the data to end up with a dataframe of total pills per year
+    temp <- temp %>%
+      # Make sure transaction date is a character.
+      mutate(TRANSACTION_DATE = as.character(TRANSACTION_DATE)) %>%
+      # Split out year from transaction date
+      mutate(year = str_sub(TRANSACTION_DATE, 5,8)) %>%
+      # Group by each pharmacy and year and count total pills
+      group_by(BUYER_DEA_NO, year) %>%
+      summarise(total_pills = sum(DOSAGE_UNIT)) %>%
+      # Join grouped and summed data with file from WAPO ARCOS api that has tract info for chain and retail pharmacies.  Note: this will leave out non pharmacy shipments. 
+      inner_join(pharmacy_tracts, by="BUYER_DEA_NO") %>%
+      # Group by tract and year and sum total pills
+      group_by(GEOID, year) %>%
+      summarise(total_pills = sum(total_pills)) %>%
+      # Join each tract/year combo to 2010 population in that tract  
+      left_join(population_2010, by="GEOID") %>%
+      # Put in the state 
+      mutate(state = toupper(state_code)) %>%
+      select(GEOID, state, everything())
+    print(paste0("Finished processing data ", state_code))
+    # Bind results into dataframe
+    tract_pills <- tract_pills %>%
+      bind_rows(temp)
+    print(paste0("Finished adding results to dataframe", state_code))
+    print(paste0("Done ", state_code,". GOTO next state"))
+  
+}
+
+
+
+
+```
+
+## Read in the Data downloaded from Retrosheet
+
+```{r}
+
+# Create an object with data directory path
+data_dir <- "../data/unzipped"
+
+# Use FS Package to store list of files in my directory as a vector
+txt_files <- dir_ls(data_dir)
+
+# Read in all year data and store as an object called data. 
+data <- txt_files %>% 
+  map_dfr(read_csv, col_names=c(
+        "date",
+        "game_no",
+        "day",
+        "visit_team",
+        "visit_league",
+        "visit_season_game_no",
+        "home_team",
+        "home_league",
+        "home_season_game_no",
+        "time_of_day",
+        "cancel_postpone_indicate",
+        "makeup_date"),
+        col_types = cols(
+          date = col_double(),
+          game_no = col_double(),
+          day = col_character(),
+          visit_team = col_character(),
+          visit_league = col_character(),
+          visit_season_game_no = col_double(),
+          home_team = col_character(),
+          home_league = col_character(),
+          home_season_game_no = col_character(),
+          time_of_day = col_character(),
+          cancel_postpone_indicate = col_character(),
+          makeup_date = col_double()
+        )
+        )
+
+```
+
+## Cleaning the data
+
+```{r}
+# glimpse(data)
+
+# Make a year and month column
+data <- data %>%
+  mutate(date = ymd(date), makeup_date = ymd(date)) %>%
+  mutate(year = year(date)) %>%
+  mutate(month = month(date))
+
+# Some checks, count by year
+year_check <- data %>%
+  group_by(year) %>%
+  summarise(count=n())
+
+# Get a sense of what are reasons for postponement
+postpone_check <- data %>%
+  group_by(cancel_postpone_indicate) %>%
+  summarise(count=n())
+
+# Get a list of teams codes.  To figure out who is who, check out retrosheet site. Or you can use devtools package to install retrosheet package, and run function getTeamIDs(2019) or feed it past years to get past teams. 
+teams <- data %>%
+  group_by(home_team) %>%
+  summarise(count=n()) %>%
+  arrange(home_team)
+
+# Here are 2018 team codes
+#Angels      Orioles      Red Sox    White Sox      Indians       Tigers       Astros       Royals        Twins      Yankees    Athletics     Mariners 
+#"ANA"        "BAL"        "BOS"        "CHA"        "CLE"        "DET"        "HOU"        "KCA"        "MIN"        "NYA"        "OAK"        "SEA" 
+#Rays      Rangers    Blue Jays Diamondbacks       Braves         Cubs         Reds      Rockies      Dodgers      Marlins      Brewers         Mets 
+#"TBA"        "TEX"        "TOR"        "ARI"        "ATL"        "CHN"        "CIN"        "COL"        "LAN"        "MIA"        "MIL"        "NYN" 
+# Phillies      Pirates       Padres       Giants    Cardinals    Nationals 
+#"PHI"        "PIT"        "SDN"        "SFN"        "SLN"        "WAS" 
+
+```
+
+### Analysis by Year 
+```{r}
+# Create a subset of the last 100 years
+data <- data %>%
+  filter(year > 1920) 
+  # Add a line to filter for specific teams. For example, Baltimore.
+  #filter(home_team == "BAL")
+
+# Create a total_games by year dataframe.  We'll need this later to calculate percentages of postponed games by year.
+
+total_games_year <- data %>%
+  group_by(year) %>%
+  summarise(count=n()) %>%
+  arrange(year) %>%
+  filter(!is.na(year))
+
+# Filter data set to create a list of rain postponed games by year.  This code filters when cancelation reason was just listed as "Rain" in the data, OR if it said something like "Rain; No makeup played".  Essentially if it contained rain.  ALSO, this unfortunately picked up train delays, so had to exclude those with the second filter. NOTE: if you wanted other types of weather and precipitation, could add in more variables to check, for example:  filter(str_detect(str_to_lower(cancel_postpone_indicate),"rain|snow|hurricane|inclement|threatening|wet|flood"))
+
+weather_postponed_games <- data %>%
+  filter(str_detect(str_to_lower(cancel_postpone_indicate),"rain")) %>%
+  filter(!str_detect(str_to_lower(cancel_postpone_indicate),"train")) 
+
+# Calculate total number of weather postponed games by year
+
+weather_postponed_games_year <- weather_postponed_games %>%
+  group_by(year) %>%
+  summarise(count=n()) %>%
+  arrange(year) %>%
+  filter(!is.na(year))
+
+# Join the two dataframes together (total games and weather postponed games by year) and calculate percentage
+
+pct_weather_postponed_year <- weather_postponed_games_year %>%
+  inner_join(total_games_year, by="year") %>%
+  rename(total=count.y, postponed=count.x) %>%
+  mutate(pct_postponed = (postponed/total)*100)
+
+View(pct_weather_postponed_year)
+
+```
