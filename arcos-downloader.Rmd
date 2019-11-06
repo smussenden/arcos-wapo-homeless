@@ -274,6 +274,11 @@ for (url in state_urls) {
 
 # write_csv(tract_pills, "data/tract_pills.csv")
 
+write_csv(pills_county_month, "data/pills_county_month.csv")
+write_csv(pills_county_month_year, "data/pills_county_month_year.csv")
+write_csv(pills_state, "data/pills_state.csv")
+write_csv(pills_state_month, "data/pills_state_month.csv")
+
 
 
 ```
